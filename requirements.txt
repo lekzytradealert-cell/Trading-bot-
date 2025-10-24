@@ -1,4 +1,4 @@
-flask
-pytelegrambotapi
+pyTelegramBotAPI
+Flask==3.0.3
 requests
-python-dotenv
+pandas
