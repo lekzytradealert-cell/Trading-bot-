@@ -1,0 +1,11 @@
+{
+  "sources": {
+    "pocket_option": {
+      "url": "https://jsonplaceholder.typicode.com/todos/1"
+    },
+    "tradingview": {
+      "webhook_url": "https://jsonplaceholder.typicode.com/todos/2"
+    }
+  },
+  "refresh_interval": 60
+}
