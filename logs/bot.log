@@ -1,0 +1,48 @@
+2025-10-24 17:49:34,549 [INFO] Starting Lekzy FX Pro at 2025-10-24 17:49:34 (RUN_MODE=web)
+2025-10-24 17:49:34,550 [INFO] Signal engine started
+2025-10-24 17:49:34,550 [INFO] Starting Flask on port 8080
+2025-10-24 17:49:34,552 [INFO] No approved users, sleeping 60s
+2025-10-24 17:49:34,561 [INFO] [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:8080
+ * Running on http://10.43.236.185:8080
+2025-10-24 17:49:34,561 [INFO] [33mPress CTRL+C to quit[0m
+2025-10-24 17:50:34,555 [INFO] No approved users, sleeping 60s
+2025-10-24 17:51:34,561 [INFO] No approved users, sleeping 60s
+2025-10-24 17:52:34,565 [INFO] No approved users, sleeping 60s
+2025-10-24 18:05:45,821 [INFO] Starting Lekzy FX Pro at 2025-10-24 18:05:45 (RUN_MODE=web)
+2025-10-24 18:05:45,822 [INFO] Signal engine started
+2025-10-24 18:05:45,822 [INFO] Starting Flask on port 8080
+2025-10-24 18:05:45,824 [INFO] No approved users, sleeping 60s
+2025-10-24 18:05:45,833 [INFO] [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:8080
+ * Running on http://10.43.236.185:8080
+2025-10-24 18:05:45,833 [INFO] [33mPress CTRL+C to quit[0m
+2025-10-24 18:06:45,825 [INFO] No approved users, sleeping 60s
+2025-10-24 18:07:45,827 [INFO] No approved users, sleeping 60s
+2025-10-24 18:08:45,828 [INFO] No approved users, sleeping 60s
+2025-10-24 18:09:45,831 [INFO] No approved users, sleeping 60s
+2025-10-24 18:10:45,832 [INFO] No approved users, sleeping 60s
+2025-10-24 18:11:45,835 [INFO] No approved users, sleeping 60s
+2025-10-24 18:12:45,838 [INFO] No approved users, sleeping 60s
+2025-10-24 18:13:45,840 [INFO] No approved users, sleeping 60s
+2025-10-24 18:14:13,605 [INFO] Starting Lekzy FX Pro at 2025-10-24 18:14:13 (RUN_MODE=web)
+2025-10-24 18:14:13,606 [INFO] Signal engine started
+2025-10-24 18:14:13,607 [INFO] Starting Flask on port 8080
+2025-10-24 18:14:13,608 [INFO] No approved users, sleeping 60s
+2025-10-24 18:14:13,617 [INFO] [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:8080
+ * Running on http://10.43.236.185:8080
+2025-10-24 18:14:13,617 [INFO] [33mPress CTRL+C to quit[0m
+2025-10-24 18:15:13,611 [INFO] No approved users, sleeping 60s
+2025-10-24 18:16:13,612 [INFO] No approved users, sleeping 60s
+2025-10-24 18:17:13,615 [INFO] No approved users, sleeping 60s
+2025-10-24 18:18:13,617 [INFO] No approved users, sleeping 60s
+2025-10-24 18:19:13,622 [INFO] No approved users, sleeping 60s
+2025-10-24 18:20:13,625 [INFO] No approved users, sleeping 60s
+2025-10-24 18:21:13,630 [INFO] No approved users, sleeping 60s
+2025-10-24 18:22:13,634 [INFO] No approved users, sleeping 60s
+2025-10-24 18:23:13,637 [INFO] No approved users, sleeping 60s
+2025-10-24 18:24:13,640 [INFO] No approved users, sleeping 60s

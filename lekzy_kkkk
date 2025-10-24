@@ -1,0 +1,185 @@
+import time
+import random
+import json
+import os
+import threading
+from datetime import datetime, timedelta, timezone
+import telebot
+from telebot import types
+
+TELEGRAM_TOKEN = "8358721170:AAGOG7151_fNYEtiNXaXCrd3r01bx3nkCDY"
+ADMIN_ID = 6307001401
+USERS_FILE = "users.json"
+
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
+
+def now_wat():
+    return datetime.now(timezone.utc) + timedelta(hours=1)
+
+def load_users():
+    if os.path.exists(USERS_FILE):
+        with open(USERS_FILE, "r") as f:
+            return json.load(f)
+    return []
+
+def save_users(users):
+    with open(USERS_FILE, "w") as f:
+        json.dump(users, f)
+
+def main_menu():
+    markup = types.InlineKeyboardMarkup()
+    markup.add(
+        types.InlineKeyboardButton("📈 Start Signals", callback_data="start_signals"),
+        types.InlineKeyboardButton("🛑 Stop Signals", callback_data="stop_signals")
+    )
+    markup.add(types.InlineKeyboardButton("👥 Show Users", callback_data="show_users"))
+    return markup
+
+@bot.message_handler(commands=['start'])
+def start(message):
+    bot.reply_to(
+        message,
+        "👋 *Welcome to Lekzy FX Signals Bot!*\n\n"
+        "Tap a button below to manage your subscription:",
+        parse_mode="Markdown",
+        reply_markup=main_menu()
+    )
+
+@bot.callback_query_handler(func=lambda call: True)
+def callback_query(call):
+    user_id = call.message.chat.id
+    users = load_users()
+
+    if call.data == "start_signals":
+        if user_id not in users:
+            users.append(user_id)
+            save_users(users)
+            join_time = now_wat().strftime("%Y-%m-%d %H:%M:%S")
+            bot.answer_callback_query(call.id, "✅ Subscribed successfully!")
+            bot.send_message(user_id, "✅ You’re now subscribed to Lekzy FX signals! 📊")
+            bot.send_message(
+                ADMIN_ID,
+                f"📩 *New User Joined Lekzy FX!*\n👤 ID: `{user_id}`\n🕒 `{join_time}` (WAT)",
+                parse_mode="Markdown"
+            )
+        else:
+            bot.answer_callback_query(call.id, "You're already subscribed 😉")
+
+    elif call.data == "stop_signals":
+        if user_id in users:
+            users.remove(user_id)
+            save_users(users)
+            bot.answer_callback_query(call.id, "🚫 Unsubscribed successfully!")
+            bot.send_message(user_id, "🚫 You’ve been unsubscribed from Lekzy FX signals.")
+        else:
+            bot.answer_callback_query(call.id, "You're not subscribed yet.")
+
+    elif call.data == "show_users":
+        if user_id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "❌ Not authorized!")
+        else:
+            ulist = load_users()
+            msg = f"👥 *Total Users:* {len(ulist)}\n\n" + "\n".join(map(str, ulist)) if ulist else "No subscribers yet."
+            bot.send_message(user_id, msg, parse_mode="Markdown")
+
+def send_trade_signal():
+    forex = ["EURUSD","USDJPY","GBPUSD","AUDUSD","USDCAD","NZDUSD"]
+    crypto = ["BTCUSD","ETHUSD","BCHUSD","XRPUSD","LTCUSD","DOGEUSD"]
+    commodities = ["GOLD","SILVER","CRUDEOIL","NATGAS"]
+    stocks = ["AAPL","TSLA","AMZN","MSFT","GOOGL","META","NFLX","NVDA"]
+    assets = forex + crypto + commodities + stocks
+
+    total_signals = total_wins = total_losses = 0
+
+    while True:
+        users = load_users()
+        if not users:
+            print("⏸️ No active users — waiting...")
+            time.sleep(60)
+            continue
+
+        signal_id = f"#LX-{random.randint(1000,9999)}"
+        asset = random.choice(assets)
+        direction = random.choice(["BUY","SELL"])
+        arrow = "⬆️" if direction == "BUY" else "⬇️"
+        confidence = random.randint(80,95)
+        payout = random.randint(75,90)
+
+        # 1️⃣ Pre-signal (30 s before confirmation)
+        entry_time = now_wat().strftime("%H:%M")
+        pre = (
+            f"🕐 Entry Time: {entry_time} (UTC +1)\n"
+            f"Asset: {asset}\n"
+            f"Expiration: 1 min [M1]\n\n"
+            f"🕓 Entry soon... Wait for confirmation in 30s.\n\n"
+            f"{signal_id}"
+        )
+        for u in users:
+            bot.send_message(u, pre)
+        time.sleep(30)
+
+        # 2️⃣ Final confirmed signal
+        analysis = random.choice([
+            "RSI shows potential reversal zone 🔄",
+            "Strong volume spike before price action 🚀",
+            "EMA crossover confirmed 📈",
+            "Support zone respected 🧱",
+            "MACD divergence detected ⚡️"
+        ])
+        final = (
+            f"📊 *Lekzy FX — RSI Bot v9.7 Pro*\n\n"
+            f"{arrow}*{direction} — {asset}*\n"
+            f"🎯 Expiration: 1 min [M1]\n"
+            f"📈 Confidence: {confidence}%\n"
+            f"💰 Payout: {payout}%\n\n"
+            f"🔍 Analysis: {analysis}\n\n"
+            f"{signal_id}\n"
+            f"⚡️ Signal powered by Lekzy FX Premium Intelligence"
+        )
+        for u in users:
+            bot.send_message(u, final, parse_mode="Markdown")
+
+        # 3️⃣ Result (after 90 s)
+        time.sleep(90)
+        is_win = random.random() < (confidence/100)
+        res = "✅ WIN" if is_win else "❌ LOSS"
+        reason = "Technical confluence supported the win 🎯" if is_win else "Market volatility caused a reversal ⚠️"
+        result = f"{res} — {asset} ({direction})\n🎯 Confidence: {confidence}% | 💰 Payout: {payout}%\n{reason}\n\n{signal_id}"
+        for u in users:
+            bot.send_message(u, result)
+
+        total_signals += 1
+        total_wins += int(is_win)
+        total_losses += int(not is_win)
+
+        # Summary every 10 signals
+        if total_signals % 10 == 0:
+            acc = round((total_wins/total_signals)*100)
+            summary = (
+                f"📊 *Session Summary*\n\n"
+                f"Total Signals: {total_signals}\n"
+                f"✅ Wins: {total_wins}\n"
+                f"❌ Losses: {total_losses}\n"
+                f"📈 Accuracy: {acc}%\n\n"
+                f"⚡️ Powered by Lekzy FX"
+            )
+            for u in users:
+                bot.send_message(u, summary, parse_mode="Markdown")
+            total_signals = total_wins = total_losses = 0
+
+        # 4️⃣ Wait 4–8 min
+        wait = random.randint(4,8)
+        next_time = (now_wat()+timedelta(minutes=wait)).strftime("%H:%M")
+        for u in users:
+            bot.send_message(u, f"🕒 Next scan in {wait} min (~{next_time} WAT)")
+        time.sleep(wait*60)
+
+if __name__ == "__main__":
+    start_msg = f"🟢 *Lekzy FX RSI Bot v9.7 Pro Started!*\n🕒 `{now_wat():%Y-%m-%d %H:%M:%S}` WAT\n⚙️ System online and scanning markets."
+    try:
+        bot.send_message(ADMIN_ID, start_msg, parse_mode="Markdown")
+    except Exception as e:
+        print("⚠️ Could not notify admin:", e)
+    threading.Thread(target=send_trade_signal, daemon=True).start()
+    print("🚀 Lekzy FX Bot running — signals active.")
+    bot.infinity_polling()

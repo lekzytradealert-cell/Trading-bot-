@@ -1,1 +1,1 @@
-web: python3 lekzy_trade_ai.py
+web: python lekzy_trade_ai.py

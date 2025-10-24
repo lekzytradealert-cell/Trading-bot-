@@ -1,0 +1,691 @@
+TELEGRAM_TOKEN = "8358721170:AAGOG7151_fNYEtiNXaXCrd3r01bx3nkCDY"
+ADMIN_ID = 6307001401  # numeric Telegram user id for admin notifications
+
+# TwelveData API key (you provided earlier)
+TWELVE_API_KEY = "660529fb84264c2d8fceb72ffc756770"
+TD_BASE = "https://api.twelvedata.com"
+
+# Paths
+APP_DIR = os.path.expanduser("~/trading_bot")
+LOGS_DIR = os.path.join(APP_DIR, "logs")
+os.makedirs(LOGS_DIR, exist_ok=True)
+
+APPROVED_FILE = os.path.join(APP_DIR, "approved_users.json")
+PENDING_FILE = os.path.join(APP_DIR, "pending_users.json")
+PID_FILE = os.path.join(APP_DIR, ".lekzy_bot.pid")
+SIGNALS_CSV = os.path.join(LOGS_DIR, "signals.csv")
+
+# Behaviour / timing (customize)
+PRE_ALERT_SECONDS = 60        # seconds before entry to send pre-alert
+RESULT_DELAY = 120            # seconds after entry to determine result (2 minutes)
+POST_GAP_MIN = 120            # seconds minimum gap after a signal
+POST_GAP_MAX = 180            # seconds max gap after a signal
+REQUIRED_CONFIRMATIONS = 3    # number of indicators required
+MIN_CONFIDENCE = 60          # minimum confidence % to send signal
+
+# Indicator params (tunable)
+EMA_FAST = 9
+EMA_SLOW = 21
+MACD_FAST = 12
+MACD_SLOW = 26
+MACD_SIGNAL = 9
+RSI_PERIOD = 14
+ATR_PERIOD = 14
+PSAR_STEP = 0.02
+PSAR_MAX = 0.2
+
+# Intervals
+PRIMARY_INTERVAL = "1min"
+SECONDARY_INTERVAL = "5min"
+USE_M5_CONFIRM = True
+
+# Assets (stable & liquid set) - TwelveData accepts symbols like "EUR/USD"
+ASSETS = [
+    "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "EUR/GBP", "USD/CAD",
+    "BTC/USD", "ETH/USD", "LTC/USD", "XRP/USD",
+    "XAU/USD", "XAG/USD",
+    "AAPL", "MSFT", "TSLA", "NVDA"
+]
+
+BOT_BRAND = "Lekzy FX Pro"
+BOT_TAGLINE = "⚡️ Signal powered by Lekzy FX Premium Intelligence"
+
+# -------------------- END CONFIG --------------------
+
+# ---------- utilities ----------
+def load_json(path: str) -> List[Any]:
+    if os.path.exists(path):
+        try:
+            with open(path, "r") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def save_json(path: str, data: List[Any]) -> None:
+    try:
+        with open(path, "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        print("Error saving", path, e)
+
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+def now_wat() -> datetime:
+    return datetime.now(timezone.utc) + timedelta(hours=1)
+
+def fmt_wat(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+# single instance guard
+def check_single_instance() -> bool:
+    if os.path.exists(PID_FILE):
+        try:
+            pid = int(open(PID_FILE).read().strip())
+            if pid > 0 and os.path.exists(f"/proc/{pid}"):
+                print(f"Another instance (pid {pid}) seems to be running. Exiting this instance.")
+                return True
+        except Exception:
+            pass
+    try:
+        with open(PID_FILE, "w") as f:
+            f.write(str(os.getpid()))
+    except Exception:
+        pass
+    return False
+
+def remove_pid() -> None:
+    try:
+        if os.path.exists(PID_FILE):
+            os.remove(PID_FILE)
+    except Exception:
+        pass
+
+# ---------- telegram setup ----------
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
+approved_users: List[int] = load_json(APPROVED_FILE)
+pending_users: List[int] = load_json(PENDING_FILE)
+
+def main_menu() -> types.InlineKeyboardMarkup:
+    m = types.InlineKeyboardMarkup()
+    m.row(types.InlineKeyboardButton("📈 Subscribe", callback_data="subscribe"),
+          types.InlineKeyboardButton("🛑 Unsubscribe", callback_data="unsubscribe"))
+    m.row(types.InlineKeyboardButton("ℹ️ Status", callback_data="status"))
+    return m
+
+def admin_markup(uid: int) -> types.InlineKeyboardMarkup:
+    m = types.InlineKeyboardMarkup()
+    m.row(types.InlineKeyboardButton("✅ Approve", callback_data=f"approve:{uid}"),
+          types.InlineKeyboardButton("❌ Reject", callback_data=f"reject:{uid}"))
+    return m
+
+# ---------- commands & callbacks ----------
+@bot.message_handler(commands=["start"])
+def cmd_start(msg):
+    cid = msg.chat.id
+    if cid in approved_users:
+        bot.reply_to(msg, f"✅ Welcome back — you are approved for {BOT_BRAND}.", reply_markup=main_menu())
+    elif cid in pending_users:
+        bot.reply_to(msg, "⏳ Your request is pending admin approval.", reply_markup=main_menu())
+    else:
+        bot.reply_to(msg, "👋 Welcome to Lekzy FX signals. Press Subscribe to request access.", reply_markup=main_menu())
+
+@bot.message_handler(commands=["status"])
+def cmd_status(msg):
+    cid = msg.chat.id
+    if cid in approved_users:
+        bot.reply_to(msg,
+                     f"✅ {BOT_BRAND} is online.\nPre-alert: {PRE_ALERT_SECONDS}s\nResult delay: {RESULT_DELAY}s\nApproved users: {len(approved_users)}")
+    else:
+        bot.reply_to(msg, "You are not subscribed. Press Subscribe to request access.")
+
+@bot.callback_query_handler(func=lambda c: True)
+def cb_handler(c):
+    cid = c.message.chat.id
+    data = c.data
+    if data == "subscribe":
+        if cid in approved_users:
+            bot.answer_callback_query(c.id, "Already approved ✅"); return
+        if cid in pending_users:
+            bot.answer_callback_query(c.id, "Request pending ⏳"); return
+        pending_users.append(cid); save_json(PENDING_FILE, pending_users)
+        bot.answer_callback_query(c.id, "Request sent ✅")
+        bot.send_message(cid, "✅ Subscription requested. Await admin approval.")
+        # Notify admin with approve/reject buttons
+        bot.send_message(ADMIN_ID, f"📩 New subscription request\n👤 ID: `{cid}`\nTime: `{fmt_wat(now_wat())}` (WAT)",
+                         parse_mode="Markdown", reply_markup=admin_markup(cid))
+        return
+
+    if data == "unsubscribe":
+        if cid in approved_users:
+            approved_users.remove(cid); save_json(APPROVED_FILE, approved_users)
+            bot.answer_callback_query(c.id, "Unsubscribed."); bot.send_message(cid, "🚫 You have been unsubscribed.")
+        else:
+            bot.answer_callback_query(c.id, "You are not subscribed.")
+        return
+
+    if data == "status":
+        if cid in approved_users:
+            bot.answer_callback_query(c.id, "Status: Approved ✅"); bot.send_message(cid, "✅ You are subscribed.")
+        elif cid in pending_users:
+            bot.answer_callback_query(c.id, "Status: Pending ⏳"); bot.send_message(cid, "⏳ Pending.")
+        else:
+            bot.answer_callback_query(c.id, "Not subscribed"); bot.send_message(cid, "Not subscribed. Press Subscribe.", reply_markup=main_menu())
+        return
+
+    if data.startswith("approve:") or data.startswith("reject:"):
+        # only admin allowed
+        if c.from_user.id != ADMIN_ID:
+            bot.answer_callback_query(c.id, "Not authorized"); return
+        action, uid_s = data.split(":", 1)
+        try:
+            uid = int(uid_s)
+        except:
+            bot.answer_callback_query(c.id, "Invalid id"); return
+        if action == "approve":
+            if uid in pending_users: pending_users.remove(uid)
+            if uid not in approved_users: approved_users.append(uid)
+            save_json(PENDING_FILE, pending_users); save_json(APPROVED_FILE, approved_users)
+            bot.answer_callback_query(c.id, f"User {uid} approved ✅")
+            try: bot.send_message(uid, f"✅ Your subscription for {BOT_BRAND} has been approved.")
+            except: pass
+            bot.send_message(ADMIN_ID, f"✅ Approved {uid}")
+        else:
+            if uid in pending_users: pending_users.remove(uid); save_json(PENDING_FILE, pending_users)
+            bot.answer_callback_query(c.id, f"User {uid} rejected ❌")
+            try: bot.send_message(uid, "❌ Your subscription request was rejected.")
+            except: pass
+            bot.send_message(ADMIN_ID, f"❌ Rejected {uid}")
+        return
+
+@bot.message_handler(commands=["approve"])
+def cmd_approve(msg):
+    if msg.from_user.id != ADMIN_ID: bot.reply_to(msg, "❌ Not authorized"); return
+    try:
+        uid = int(msg.text.split()[1])
+    except:
+        bot.reply_to(msg, "Usage: /approve <user_id>"); return
+    if uid in pending_users: pending_users.remove(uid)
+    if uid not in approved_users: approved_users.append(uid)
+    save_json(PENDING_FILE, pending_users); save_json(APPROVED_FILE, approved_users)
+    bot.reply_to(msg, f"✅ User {uid} approved")
+    try: bot.send_message(uid, f"✅ Your subscription for {BOT_BRAND} has been approved.")
+    except: pass
+
+@bot.message_handler(commands=["reject"])
+def cmd_reject(msg):
+    if msg.from_user.id != ADMIN_ID: bot.reply_to(msg, "❌ Not authorized"); return
+    try:
+        uid = int(msg.text.split()[1])
+    except:
+        bot.reply_to(msg, "Usage: /reject <user_id>"); return
+    if uid in pending_users: pending_users.remove(uid); save_json(PENDING_FILE, pending_users)
+    bot.reply_to(msg, f"❌ User {uid} rejected")
+    try: bot.send_message(uid, "❌ Your subscription request was rejected.")
+    except: pass
+
+@bot.message_handler(commands=["list_users"])
+def cmd_list_users(msg):
+    if msg.from_user.id != ADMIN_ID: bot.reply_to(msg, "❌ Not authorized"); return
+    bot.reply_to(msg, "Approved users:\n" + ("\n".join(map(str, approved_users)) if approved_users else "None"))
+
+@bot.message_handler(commands=["list_pending"])
+def cmd_list_pending(msg):
+    if msg.from_user.id != ADMIN_ID: bot.reply_to(msg, "❌ Not authorized"); return
+    bot.reply_to(msg, "Pending:\n" + ("\n".join(map(str, pending_users)) if pending_users else "None"))
+
+# ---------- broadcast helper ----------
+def broadcast(text: str, parse_mode: str = "Markdown") -> None:
+    for uid in list(approved_users):
+        try:
+            bot.send_message(uid, text, parse_mode=parse_mode, disable_web_page_preview=True)
+        except ApiTelegramException as e:
+            s = str(e).lower()
+            # remove blocked / invalid chats
+            if "blocked" in s or "chat not found" in s:
+                try:
+                    approved_users.remove(uid); save_json(APPROVED_FILE, approved_users)
+                except: pass
+            else:
+                print("Broadcast error:", e)
+        except Exception as e:
+            print("Broadcast exception:", e)
+
+# ---------- TwelveData fetch ----------
+def fetch_ohlc(symbol: str, interval: str = "1min", outputsize: int = 200) -> Dict[str, Any]:
+    params = {"symbol": symbol, "interval": interval, "apikey": TWELVE_API_KEY, "outputsize": outputsize, "format": "JSON"}
+    r = requests.get(f"{TD_BASE}/time_series", params=params, timeout=15)
+    r.raise_for_status()
+    data = r.json()
+    if "values" not in data:
+        raise RuntimeError(f"TwelveData error: {data}")
+    vals = list(reversed(data["values"]))  # oldest -> newest
+    opens = [float(v["open"]) for v in vals]
+    highs = [float(v["high"]) for v in vals]
+    lows = [float(v["low"]) for v in vals]
+    closes = [float(v["close"]) for v in vals]
+    times = [v["datetime"] for v in vals]
+    volumes = [float(v.get("volume", 0)) for v in vals]
+    return {"time": times, "open": opens, "high": highs, "low": lows, "close": closes, "volume": volumes}
+
+# ---------- indicators (pure python) ----------
+def ema_list(prices: List[float], period: int) -> List[float]:
+    if len(prices) < period: return []
+    k = 2.0 / (period + 1.0)
+    ema = sum(prices[:period]) / period
+    out = [None] * (period - 1)
+    out.append(ema)
+    for p in prices[period:]:
+        ema = p * k + ema * (1 - k)
+        out.append(ema)
+    return out
+
+def rsi_list(prices: List[float], period: int = 14) -> List[float]:
+    if len(prices) < period + 1: return []
+    deltas = [prices[i] - prices[i-1] for i in range(1, len(prices))]
+    seed = deltas[:period]
+    up = sum(x for x in seed if x > 0) / period
+    down = -sum(x for x in seed if x < 0) / period
+    rs = up / (down if down != 0 else 1e-9)
+    rsi = [None]*period
+    rsi_val = 100. - 100. / (1. + rs)
+    rsi.append(rsi_val)
+    up_ewm = up; down_ewm = down
+    for delta in deltas[period:]:
+        up_ewm = (up_ewm * (period - 1) + max(delta, 0)) / period
+        down_ewm = (down_ewm * (period - 1) + max(-delta, 0)) / period
+        rs = up_ewm / (down_ewm if down_ewm != 0 else 1e-9)
+        rsi_val = 100. - 100. / (1. + rs)
+        rsi.append(rsi_val)
+    return rsi
+
+def macd_list(prices: List[float], fast: int = 12, slow: int = 26, signal: int = 9):
+    ema_fast = ema_list(prices, fast)
+    ema_slow = ema_list(prices, slow)
+    macd_line = []
+    for i in range(len(prices)):
+        ef = ema_fast[i] if i < len(ema_fast) else None
+        es = ema_slow[i] if i < len(ema_slow) else None
+        macd_line.append(None if ef is None or es is None else ef - es)
+    clean = [x for x in macd_line if x is not None]
+    sig = ema_list(clean, signal) if len(clean) >= signal else []
+    sig_full = [None] * (len(macd_line) - len(sig)) + sig
+    hist = [None if m is None or s is None else (m - s) for m, s in zip(macd_line, sig_full)]
+    return macd_line, sig_full, hist
+
+def atr_list(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> List[float]:
+    trs = []
+    for i in range(1, len(highs)):
+        tr = max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1]))
+        trs.append(tr)
+    if len(trs) < period: return []
+    atrs = [None]*period
+    first_atr = sum(trs[:period]) / period
+    atrs.append(first_atr)
+    for tr in trs[period:]:
+        prev = atrs[-1]
+        atrs.append((prev * (period-1) + tr) / period)
+    return atrs
+
+def psar_list(highs: List[float], lows: List[float], step: float = 0.02, max_step: float = 0.2) -> List[float]:
+    n = len(highs)
+    if n < 2: return [None]*n
+    psar = [None]*n
+    up = True
+    af = step
+    ep = highs[0]
+    psar[0] = lows[0] - (highs[0] - lows[0])
+    for i in range(1, n):
+        prev = psar[i-1]
+        if up:
+            psar_val = prev + af * (ep - prev)
+            psar[i] = psar_val
+            if lows[i] < psar_val:
+                up = False
+                psar[i] = ep
+                af = step
+                ep = lows[i]
+        else:
+            psar_val = prev - af * (prev - ep)
+            psar[i] = psar_val
+            if highs[i] > psar_val:
+                up = True
+                psar[i] = ep
+                af = step
+                ep = highs[i]
+        if up:
+            if highs[i] > ep:
+                ep = highs[i]; af = min(af + step, max_step)
+        else:
+            if lows[i] < ep:
+                ep = lows[i]; af = min(af + step, max_step)
+    return psar
+
+# ---------- evaluation ----------
+def evaluate_signal(symbol: str) -> Dict[str, Any]:
+    """
+    Returns dict with keys:
+    - signal: "BUY"/"SELL"/None
+    - confidence: int %
+    - analysis: text
+    - entry_time_wat: datetime
+    - price: float (current close)
+    - meta: dict
+    - confirms_count: int
+    """
+    try:
+        o = fetch_ohlc(symbol, interval=PRIMARY_INTERVAL, outputsize=300)
+    except Exception as e:
+        return {"error": f"data error: {e}"}
+
+    highs = o["high"]; lows = o["low"]; closes = o["close"]; opens = o["open"]
+    n = len(closes)
+    if n < max(RSI_PERIOD + 5, EMA_SLOW + 5, MACD_SLOW + 5):
+        return {"error": "not enough data"}
+
+    ema_fast = ema_list(closes, EMA_FAST)
+    ema_slow = ema_list(closes, EMA_SLOW)
+    macd_line, macd_sig, macd_hist = macd_list(closes, MACD_FAST, MACD_SLOW, MACD_SIGNAL)
+    rsi_vals = rsi_list(closes, RSI_PERIOD)
+    atr_vals = atr_list(highs, lows, closes, ATR_PERIOD)
+    psar_vals = psar_list(highs, lows, PSAR_STEP, PSAR_MAX)
+
+    def last(lst, default=None, off=-1):
+        try: return lst[off]
+        except: return default
+
+    ema_fast_now = last(ema_fast); ema_slow_now = last(ema_slow)
+    macd_hist_now = last(macd_hist); macd_hist_prev = last(macd_hist, None, -2)
+    rsi_now = last(rsi_vals); rsi_prev = last(rsi_vals, None, -2)
+    atr_now = last(atr_vals); psar_now = last(psar_vals)
+    close_now = closes[-1]
+
+    # booleans
+    ema_bull = ema_fast_now is not None and ema_slow_now is not None and ema_fast_now > ema_slow_now
+    ema_bear = ema_fast_now is not None and ema_slow_now is not None and ema_fast_now < ema_slow_now
+    macd_bull = macd_hist_now is not None and macd_hist_prev is not None and macd_hist_now > 0 and macd_hist_now > macd_hist_prev
+    macd_bear = macd_hist_now is not None and macd_hist_prev is not None and macd_hist_now < 0 and macd_hist_now < macd_hist_prev
+    rsi_bull = rsi_now is not None and rsi_prev is not None and rsi_now < 40 and rsi_now > rsi_prev
+    rsi_bear = rsi_now is not None and rsi_prev is not None and rsi_now > 60 and rsi_now < rsi_prev
+    psar_bull = psar_now is not None and psar_now < close_now
+    psar_bear = psar_now is not None and psar_now > close_now
+
+    atr_gate = True
+    if atr_now and close_now > 0:
+        atr_ratio = atr_now / close_now
+        if atr_ratio < 0.0005:  # filter tiny moves
+            atr_gate = False
+
+    bull_conf = sum([bool(ema_bull), bool(macd_bull), bool(rsi_bull), bool(psar_bull), bool(atr_gate)])
+    bear_conf = sum([bool(ema_bear), bool(macd_bear), bool(rsi_bear), bool(psar_bear), bool(atr_gate)])
+
+    m5_ok = True
+    if USE_M5_CONFIRM:
+        try:
+            o5 = fetch_ohlc(symbol, interval=SECONDARY_INTERVAL, outputsize=200)
+            closes5 = o5["close"]
+            ema5_fast = ema_list(closes5, EMA_FAST); ema5_slow = ema_list(closes5, EMA_SLOW)
+            if ema5_fast and ema5_slow and ema5_fast[-1] is not None and ema5_slow[-1] is not None:
+                if bull_conf > bear_conf:
+                    m5_ok = ema5_fast[-1] > ema5_slow[-1]
+                elif bear_conf > bull_conf:
+                    m5_ok = ema5_fast[-1] < ema5_slow[-1]
+                else:
+                    m5_ok = True
+        except Exception:
+            m5_ok = True
+
+    decision = None; confidence = None
+    def conf_score(c):
+        return min(98, int(50 + c * 12 + random.randint(0,4)))
+
+    if bull_conf >= REQUIRED_CONFIRMATIONS and bull_conf > bear_conf and m5_ok:
+        decision = "BUY"; confidence = conf_score(bull_conf)
+    elif bear_conf >= REQUIRED_CONFIRMATIONS and bear_conf > bull_conf and m5_ok:
+        decision = "SELL"; confidence = conf_score(bear_conf)
+    else:
+        decision = None
+
+    # schedule entry at next minute UTC, then convert to WAT for messaging
+    now = datetime.now(timezone.utc)
+    next_minute_utc = (now.replace(second=0, microsecond=0) + timedelta(minutes=1))
+    entry_time_wat = next_minute_utc + timedelta(hours=1)
+
+    analysis = []
+    if ema_bull: analysis.append("EMA fast>slow")
+    if macd_bull: analysis.append("MACD hist rising")
+    if rsi_bull: analysis.append("RSI rising from low")
+    if psar_bull: analysis.append("PSAR below price")
+    if not atr_gate: analysis.append("Low ATR")
+    if ema_bear: analysis.append("EMA fast<slow")
+    if macd_bear: analysis.append("MACD hist falling")
+    if rsi_bear: analysis.append("RSI dropping")
+    if psar_bear: analysis.append("PSAR above price")
+
+    return {
+        "signal": decision,
+        "confidence": confidence,
+        "confirms_count": max(bull_conf, bear_conf),
+        "confirms": {
+            "ema_bull": bool(ema_bull), "macd_bull": bool(macd_bull), "rsi_bull": bool(rsi_bull), "psar_bull": bool(psar_bull),
+            "ema_bear": bool(ema_bear), "macd_bear": bool(macd_bear), "rsi_bear": bool(rsi_bear), "psar_bear": bool(psar_bear),
+            "atr_gate": atr_gate, "m5_ok": m5_ok
+        },
+        "analysis": "; ".join(analysis) if analysis else "No confluence",
+        "entry_time_wat": entry_time_wat,
+        "price": close_now,
+        "meta": {"ema_fast": ema_fast_now, "ema_slow": ema_slow_now, "macd_hist": macd_hist_now, "rsi": rsi_now, "atr": atr_now, "psar": psar_now}
+    }
+
+# ---------- logging ----------
+def ensure_csv():
+    if not os.path.exists(SIGNALS_CSV):
+        with open(SIGNALS_CSV, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["timestamp_wat","asset","signal","confidence","price","analysis","confirms","meta","result","result_time_wat"])
+
+def log_signal(asset: str, info: Dict[str, Any], result: str = None) -> None:
+    ensure_csv()
+    ts = now_wat().strftime("%Y-%m-%d %H:%M:%S")
+    row = [ts, asset, info.get("signal"), info.get("confidence"), info.get("price"), info.get("analysis"), info.get("confirms_count"), json.dumps(info.get("meta")), result or "", now_wat().strftime("%Y-%m-%d %H:%M:%S") if result else ""]
+    with open(SIGNALS_CSV, "a", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(row)
+
+# ---------- main signal loop ----------
+def signal_loop():
+    recent_assets: List[str] = []
+    print("Signal engine started...")
+    while True:
+        try:
+            if not approved_users:
+                print("⏸️ No approved users — sleeping 60s")
+                time.sleep(60)
+                continue
+
+            # choose asset avoiding recent repeats
+            asset = None
+            tries = 0
+            while tries < 12:
+                cand = random.choice(ASSETS)
+                if cand not in recent_assets:
+                    asset = cand; break
+                tries += 1
+            if not asset:
+                asset = random.choice(ASSETS)
+
+            print(f"Scanning {asset} ...")
+            info = evaluate_signal(asset)
+            if info.get("error"):
+                print("Data error:", info["error"])
+                time.sleep(5)
+                continue
+
+            if not info.get("signal"):
+                print("No confluence for", asset)
+                time.sleep(6)
+                continue
+
+            if info.get("confidence") is None or info.get("confidence") < MIN_CONFIDENCE:
+                print("Low confidence", info.get("confidence"))
+                time.sleep(6)
+                continue
+
+            entry_time = info["entry_time_wat"]
+            pre_alert_time = entry_time - timedelta(seconds=PRE_ALERT_SECONDS)
+            noww = now_wat()
+            delta = (pre_alert_time - noww).total_seconds()
+
+            signal_uid = f"#LX-{random.randint(1000,9999)}"
+
+            # Pre-alert
+            pre_text = (
+                f"📢 *{BOT_BRAND} — Upcoming Signal (in {PRE_ALERT_SECONDS}s)*\n\n"
+                f"Asset: {asset}\nDirection: {info['signal']} {'⬆️' if info['signal']=='BUY' else '⬇️'}\n"
+                f"🕐 Expected Entry: {entry_time.strftime('%H:%M:%S')} (WAT)\n"
+                f"⏳ Wait for confirmation — final signal soon\n\n{signal_uid}"
+            )
+            if delta > 0:
+                broadcast(pre_text)
+                sleep_for = max(1, int(delta) + random.randint(-2,2))
+                print(f"Pre-alert sent. Sleeping {sleep_for}s until final signal...")
+                time.sleep(sleep_for)
+            else:
+                print("Pre-alert time passed or is now — proceeding immediately")
+
+            # Final signal
+            final_text = (
+                f"📣 *{BOT_BRAND} — Signal Active*\n\n"
+                f"{'⬆️' if info['signal']=='BUY' else '⬇️'} *{info['signal']} — {asset}*\n"
+                f"🎯 Expiry: 1 min (M1)\n"
+                f"📈 Confidence: {info.get('confidence')}%\n"
+                f"🔎 Analysis: {info.get('analysis')}\n\n"
+                f"{signal_uid}\n{BOT_TAGLINE}"
+            )
+            broadcast(final_text)
+            log_signal(asset, info)
+
+            # remember asset to avoid immediate repeats
+            recent_assets.append(asset)
+            if len(recent_assets) > 6:
+                recent_assets = recent_assets[-6:]
+
+            # Wait RESULT_DELAY then check result from TwelveData (real price check)
+            print(f"Waiting {RESULT_DELAY}s to evaluate result...")
+            time.sleep(RESULT_DELAY)
+            try:
+                # get latest close after RESULT_DELAY to decide win/loss
+                check_o = fetch_ohlc(asset, interval=PRIMARY_INTERVAL, outputsize=3)
+                latest_close = check_o["close"][-1]
+                entry_price = info.get("price")
+                if info.get("signal") == "BUY":
+                    is_win = latest_close > entry_price
+                else:
+                    is_win = latest_close < entry_price
+                result_text = "✅ WIN" if is_win else "❌ LOSS"
+                summary = "Momentum held — trade closed in profit." if is_win else "Market reversed — loss."
+                broadcast(f"{result_text} — {asset} ({info['signal']})\n🎯 Confidence: {info.get('confidence')}%\n{summary}\n\n{signal_uid}")
+                log_signal(asset, info, result=result_text)
+            except Exception as e:
+                print("Result check error:", e)
+                # fallback to simulated result if we cannot fetch: use confidence-based sim
+                is_win = random.random() < (info["confidence"] / 100.0)
+                result_text = "✅ WIN" if is_win else "❌ LOSS"
+                broadcast(f"{result_text} — {asset} ({info['signal']})\n(Estimated) 🎯 Confidence: {info.get('confidence')}%\n\n{signal_uid}")
+                log_signal(asset, info, result=result_text)
+
+            gap = random.randint(POST_GAP_MIN, POST_GAP_MAX)
+            print(f"Sleeping {gap}s before next scan...")
+            time.sleep(gap)
+
+        except Exception as e:
+            print("Signal loop exception:", e)
+            time.sleep(5)
+
+# ---------- polling wrapper ----------
+def start_polling():
+    while True:
+        try:
+            # use polling with timeouts to avoid long blocks
+            bot.polling(none_stop=True, interval=1, timeout=20)
+        except ApiTelegramException as e:
+            print("ApiTelegramException (polling):", e)
+            if "409" in str(e):
+                print("409 conflict - another instance. Exiting polling loop.")
+                try: bot.send_message(ADMIN_ID, "⚠️ Bot conflict detected (another instance). Restart recommended.")
+                except: pass
+                break
+            time.sleep(5)
+        except Exception as e:
+            print("Polling exception:", e)
+            time.sleep(5)
+
+# ---------- backtest helper (optional) ----------
+def backtest_asset(symbol: str, days: int = 7):
+    outsize = min(10000, days*1440)
+    print(f"Backtesting {symbol} for {days} days (outputsize={outsize})")
+    try:
+        o = fetch_ohlc(symbol, interval=PRIMARY_INTERVAL, outputsize=outsize)
+    except Exception as e:
+        print("Backtest data error:", e); return
+    closes = o["close"]; highs = o["high"]; lows = o["low"]
+    trades = []
+    for i in range(200, len(closes)-2):
+        window = closes[:i+1]
+        ema_f = ema_list(window, EMA_FAST); ema_s = ema_list(window, EMA_SLOW)
+        macd_l, macd_s, macd_h = macd_list(window, MACD_FAST, MACD_SLOW, MACD_SIGNAL)
+        rsi_v = rsi_list(window, RSI_PERIOD)
+        try:
+            ema_fast_now = ema_f[-1]; ema_slow_now = ema_s[-1]
+            macd_hist_now = macd_h[-1]; macd_hist_prev = macd_h[-2]
+            rsi_now = rsi_v[-1]; rsi_prev = rsi_v[-2]
+        except:
+            continue
+        bull = ema_fast_now > ema_slow_now and macd_hist_now > 0 and macd_hist_now > macd_hist_prev and rsi_now < 40 and rsi_now > rsi_prev
+        bear = ema_fast_now < ema_slow_now and macd_hist_now < 0 and macd_hist_now < macd_hist_prev and rsi_now > 60 and rsi_now < rsi_prev
+        if bull or bear:
+            nxt_close = closes[i+1]; curr_close = closes[i]
+            win = (nxt_close > curr_close) if bull else (nxt_close < curr_close)
+            trades.append(win)
+    if trades:
+        win_rate = sum(1 for x in trades if x) / len(trades) * 100
+        print(f"Backtest trades: {len(trades)}, Win rate: {win_rate:.2f}%")
+    else:
+        print("No trades found in backtest.")
+
+# ---------- startup ----------
+def main():
+    if check_single_instance():
+        return
+    global approved_users, pending_users
+    approved_users = load_json(APPROVED_FILE)
+    pending_users = load_json(PENDING_FILE)
+    print("Approved:", approved_users)
+    print("Pending:", pending_users)
+
+    try:
+        bot.send_message(ADMIN_ID, f"🟢 {BOT_BRAND} started at {fmt_wat(now_wat())} (WAT)")
+    except Exception:
+        pass
+
+    # start signal loop
+    t = threading.Thread(target=signal_loop, daemon=True)
+    t.start()
+
+    try:
+        start_polling()
+    finally:
+        remove_pid()
+
+# CLI quick helpers
+if __name__ == "__main__":
+    if len(sys.argv) >= 2 and sys.argv[1] == "backtest":
+        if len(sys.argv) >= 3:
+            sym = sys.argv[2]
+            days = int(sys.argv[3]) if len(sys.argv) >= 4 else 7
+            backtest_asset(sym, days)
+        else:
+            print("Usage: python lekzy_bot.py backtest SYMBOL [days]")
+        sys.exit(0)
+    main()

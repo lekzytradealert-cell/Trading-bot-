@@ -1,0 +1,285 @@
+import os
+import requests
+
+# Telegram Bot Configuration
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+def send_telegram_message(message: str):
+    """Send a message to your Telegram chat."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Telegram token or chat ID missing.")
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
+
+    try:
+        requests.post(url, json=payload)
+    except Exception as e:
+        print(f"Error sending Telegram message: {e}")
+
+
+import os
+import time
+import json
+import sqlite3
+import threading
+from datetime import datetime, timezone
+from flask import Flask, request, jsonify, abort
+import telebot
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# --- CONFIG from env ---
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+if not TELEGRAM_TOKEN:
+    raise SystemExit("TELEGRAM_TOKEN env var not set")
+
+ADMIN_IDS = os.getenv("ADMIN_IDS", "")  # comma list of admin chat ids
+ADMIN_IDS = [int(x) for x in ADMIN_IDS.split(",") if x.strip()]
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")  # secret string TradingView sets
+# default timeframe seconds mapping (supports M1, M5, etc)
+TF_SECONDS = {"M1": 60, "M5": 300, "M15": 900, "H1": 3600}
+
+# DB file
+DB_FILE = os.getenv("DB_FILE", "subs.db")
+
+bot = telebot.TeleBot(TELEGRAM_TOKEN, threaded=True)
+app = Flask(__name__)
+
+# --- Simple SQLite wrapper for subscribers ---
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS subscribers(
+      chat_id INTEGER PRIMARY KEY,
+      username TEXT,
+      approved INTEGER DEFAULT 0
+    )
+    """)
+    conn.commit()
+    conn.close()
+
+def add_subscriber(chat_id, username):
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute("INSERT OR IGNORE INTO subscribers(chat_id, username, approved) VALUES(?,?,0)", (chat_id, username))
+    conn.commit()
+    conn.close()
+
+def approve_subscriber(chat_id):
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute("UPDATE subscribers SET approved=1 WHERE chat_id=?", (chat_id,))
+    conn.commit()
+    conn.close()
+
+def reject_subscriber(chat_id):
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM subscribers WHERE chat_id=?", (chat_id,))
+    conn.commit()
+    conn.close()
+
+def list_subscribers():
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute("SELECT chat_id, username, approved FROM subscribers")
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+def get_approved_subs():
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute("SELECT chat_id FROM subscribers WHERE approved=1")
+    rows = cur.fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+# --- Utility scheduling logic ---
+def now_epoch_seconds():
+    return int(time.time())
+
+def seconds_into_candle(tf_seconds):
+    s = now_epoch_seconds()
+    return s % tf_seconds
+
+def schedule_alerts(payload, tf="M1"):
+    """Schedules pre-alert, confirm, and entry tasks based on arrival time and tf."""
+    tf_seconds = TF_SECONDS.get(tf, 60)
+    s_into = seconds_into_candle(tf_seconds)
+
+    # Desired offsets within candle (seconds from candle start)
+    pre_offset = 30
+    confirm_offset = 50
+    entry_offset = tf_seconds  # next candle start (we will schedule at candle end => entry at next candle open)
+
+    # compute delays relative to now
+    # time until next candle start:
+    time_until_next_candle = tf_seconds - s_into if s_into != 0 else 0
+
+    # compute time from now to the moment-of-event
+    pre_delay = (pre_offset - s_into)
+    confirm_delay = (confirm_offset - s_into)
+    entry_delay = (tf_seconds - s_into)  # entry at next candle open
+
+    # If pre_delay is negative, we are past that moment in this candle; schedule it for next candle:
+    if pre_delay <= 0:
+        pre_delay += tf_seconds
+    if confirm_delay <= 0:
+        confirm_delay += tf_seconds
+    if entry_delay <= 0:
+        entry_delay += tf_seconds
+
+    signal_id = payload.get("signal_id", f"sig-{int(time.time())}")
+
+    # pack the message content
+    symbol = payload.get("symbol", "UNKNOWN")
+    direction = payload.get("direction", "BUY").upper()
+    confidence = payload.get("confidence", "N/A")
+    timeframe = tf
+    analysis = payload.get("analysis", "")
+
+    # Tasks
+    def send_pre():
+        text = f"🔔 Signal forming — {symbol} ({direction})\n# {signal_id}\nConfidence: {confidence}\nStatus: Pre-alert (forming)\nAnalysis: {analysis}"
+        broadcast(text)
+
+    def send_confirm():
+        text = f"⚠️ Signal Confirmed — {symbol} ({direction})\n# {signal_id}\nWill enter on next candle (timeframe {timeframe})\nConfidence: {confidence}\nAnalysis: {analysis}"
+        broadcast(text)
+
+    def send_entry():
+        text = f"📣 ENTRY — {symbol} ({direction})\n# {signal_id}\nEntry: NEXT CANDLE OPEN\nExpiry: 1 min ({timeframe})\nConfidence: {confidence}\nAnalysis: {analysis}"
+        broadcast(text)
+        # Note: execute broker API call here if you add auto-ordering later.
+
+    # schedule timers (threading.Timer)
+    threading.Timer(pre_delay, send_pre).start()
+    threading.Timer(confirm_delay, send_confirm).start()
+    threading.Timer(entry_delay, send_entry).start()
+
+# --- Broadcast helper ---
+def broadcast(message_text):
+    subs = get_approved_subs()
+    for chat_id in subs:
+        try:
+            bot.send_message(chat_id, message_text, parse_mode="HTML")
+        except Exception as e:
+            print(f"Failed send to {chat_id}: {e}")
+
+# --- Bot command handlers ---
+@bot.message_handler(commands=['start'])
+def handle_start(message):
+    chat_id = message.chat.id
+    username = message.from_user.username or message.from_user.first_name or ""
+    add_subscriber(chat_id, username)
+    if chat_id in ADMIN_IDS:
+        approve_subscriber(chat_id)
+        bot.send_message(chat_id, "👑 Welcome, admin! You are auto-approved.")
+    else:
+        bot.send_message(chat_id, "Thanks! Subscription request received. An admin will approve you shortly.")
+
+@bot.message_handler(commands=['approve'])
+def cmd_approve(message):
+    if message.chat.id not in ADMIN_IDS:
+        bot.reply_to(message, "Only admins may approve subscribers.")
+        return
+    parts = message.text.split()
+    if len(parts) < 2:
+        bot.reply_to(message, "Usage: /approve <chat_id>")
+        return
+    try:
+        cid = int(parts[1])
+        approve_subscriber(cid)
+        bot.reply_to(message, f"Approved {cid}")
+        try:
+            bot.send_message(cid, "✅ Your subscription has been approved by admin. You will now receive signals.")
+        except: pass
+    except ValueError:
+        bot.reply_to(message, "Invalid chat id")
+
+@bot.message_handler(commands=['reject'])
+def cmd_reject(message):
+    if message.chat.id not in ADMIN_IDS:
+        bot.reply_to(message, "Only admins may reject.")
+        return
+    parts = message.text.split()
+    if len(parts) < 2:
+        bot.reply_to(message, "Usage: /reject <chat_id>")
+        return
+    try:
+        cid = int(parts[1])
+        reject_subscriber(cid)
+        bot.reply_to(message, f"Rejected {cid}")
+    except ValueError:
+        bot.reply_to(message, "Invalid chat id")
+
+@bot.message_handler(commands=['subs'])
+def cmd_subs(message):
+    if message.chat.id not in ADMIN_IDS:
+        bot.reply_to(message, "Only admins may list subscribers.")
+        return
+    rows = list_subscribers()
+    out = "Subscribers:\n"
+    for r in rows:
+        out += f"{r[0]} - {r[1]} - {'approved' if r[2] else 'pending'}\n"
+    bot.reply_to(message, out[:4000])
+
+# --- Flask endpoints ---
+@app.route("/")
+def index():
+    return "Lekzy Trade AI bot is running!", 200
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    # optional secret header validation
+    header_secret = request.headers.get("X-WEBHOOK-SECRET", "")
+    if WEBHOOK_SECRET:
+        if header_secret != WEBHOOK_SECRET:
+            print("Invalid webhook secret header")
+            return jsonify({"ok": False, "error": "invalid secret"}), 403
+
+    try:
+        payload = request.get_json(force=True)
+    except Exception as e:
+        print("Bad JSON", e)
+        return jsonify({"ok": False, "error": "bad json"}), 400
+
+    # payload shape must include at least symbol and direction; accept flexible payload
+    # Example expected fields that TradingView alert should include: symbol, direction, confidence, timeframe, analysis, signal_id
+    symbol = payload.get("symbol")
+    direction = payload.get("direction")
+    tf = payload.get("timeframe", "M1")
+    if not symbol or not direction:
+        print("Missing fields in webhook payload:", payload)
+        # still accept but log
+    # schedule the alerts
+    schedule_alerts(payload, tf=tf)
+    return jsonify({"ok": True}), 200
+
+# --- Start Flask in a thread and Telegram polling thread when run locally (Render will run Flask only) ---
+def start_bot_polling():
+    # only use polling if running locally; Render will run Flask (webhooks) so polling isn't necessary there
+    print("Starting bot polling (local mode).")
+    bot.polling(non_stop=True)
+
+if __name__ == "__main__":
+    init_db()
+    # If RUN_MODE=poll use polling (for local Termux); otherwise just run Flask app
+    run_mode = os.getenv("RUN_MODE", "web")  # set RUN_MODE=poll to use polling (termux)
+    if run_mode == "poll":
+        # start polling in main thread
+        start_bot_polling()
+    else:
+        # run flask app (Render will call this)
+        port = int(os.getenv("PORT", "8080"))
+        # Start bot polling in background only if explicitly asked (not default)
+        if os.getenv("START_TELEGRAM_POLLING", "false").lower() in ("1","true","yes"):
+            t = threading.Thread(target=start_bot_polling, daemon=True)
+            t.start()
+        app.run(host="0.0.0.0", port=port)

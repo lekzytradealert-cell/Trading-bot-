@@ -1,0 +1,83 @@
+==============================
+📘 RSI BOT RESTORE GUIDE
+==============================
+
+⚙️ STEP 1 — Install Termux
+Download from: https://termux.dev/en/
+Use the F-Droid version (not Play Store).
+
+⚙️ STEP 2 — Allow Storage Access
+Run this command:
+termux-setup-storage
+Tap “Allow” when asked.
+
+⚙️ STEP 3 — Update Termux
+pkg update -y && pkg upgrade -y
+
+⚙️ STEP 4 — Install Requirements
+pkg install python tmux curl zip unzip -y
+
+⚙️ STEP 5 — Restore Your Backup
+Copy "trading_bot_backup.zip" into your phone’s Downloads folder,
+then run:
+mv /sdcard/Download/trading_bot_backup.zip ~/
+cd ~
+unzip trading_bot_backup.zip
+
+⚙️ STEP 6 — Give Permission
+chmod +x ~/trading_bot/run_bot.sh
+
+⚙️ STEP 7 — Start the Bot
+tmux new -s bot
+bash ~/trading_bot/run_bot.sh
+(Then press Ctrl + B, then D to detach)
+
+⚙️ STEP 8 — Optional: Auto-start on Boot
+Install Termux:Boot from F-Droid
+mkdir -p ~/.termux/boot
+nano ~/.termux/boot/start_bot.sh
+Add:
+tmux new-session -d -s bot '~/trading_bot/run_bot.sh'
+Then run:
+chmod +x ~/.termux/boot/start_bot.sh
+
+⚙️ STEP 9 — Check Logs
+tail -f ~/trading_bot/logs/bot.log
+
+✅ DONE!
+Your bot will now auto-run in the background, even after reboot.
+==============================
+⚡ QUICK COMMANDS
+==============================
+
+▶️ Start Bot Manually
+tmux new -s bot
+bash ~/trading_bot/run_bot.sh
+
+(Press Ctrl + B, then D to detach so it runs in background)
+
+💤 Stop Bot
+tmux kill-session -t bot
+
+🔁 Restart Bot
+tmux kill-session -t bot && tmux new -d -s bot '~/trading_bot/run_bot.sh'
+
+📄 View Live Logs
+tail -f ~/trading_bot/logs/bot.log
+
+🧾 View Last 20 Log Lines
+tail ~/trading_bot/logs/bot.log
+
+📦 Backup Bot
+cd ~
+zip -r trading_bot_backup.zip trading_bot
+mv trading_bot_backup.zip /sdcard/Download/
+
+💾 Restore Bot
+mv /sdcard/Download/trading_bot_backup.zip ~/
+cd ~
+unzip trading_bot_backup.zip
+chmod +x ~/trading_bot/run_bot.sh
+
+✅ Check If Bot Is Running
+tmux ls
