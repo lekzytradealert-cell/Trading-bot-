@@ -1,6 +1,10 @@
-Flask==3.0.3
-requests
 python-telegram-bot==20.7
-pyTelegramBotAPI==4.16.1
-python-dotenv
+requests==2.31.0
+pandas==2.0.3
+numpy==1.24.3
+yfinance==0.2.18
+python-dotenv==1.0.0
+schedule==1.2.0
 pytz==2023.3
+flask==2.3.3
+pyTelegramBotAPI==4.19.1
