@@ -1,1 +1,1 @@
-web: python lekzy_trade_ai_conflict_fix.py
+web: python lekzy_trade_ai_final.py
